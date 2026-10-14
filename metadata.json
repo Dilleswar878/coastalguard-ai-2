@@ -1,0 +1,10 @@
+{
+  "name": "CoastalGuard AI — Real-Time Coastal Pollution Intelligence",
+  "description": "Citizen-powered coastal pollution reporting and AI-assisted environmental response intelligence platform with tactical telemetry and glitch-tech UI.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
