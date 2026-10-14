@@ -23,20 +23,24 @@ interface NavbarProps {
   onNavigate: (path: string) => void;
 }
 
+const TelemetryClock: React.FC = React.memo(() => {
+  const [timeUtc, setTimeUtc] = useState<string>(() => new Date().toISOString().substring(11, 19) + ' UTC');
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTimeUtc(new Date().toISOString().substring(11, 19) + ' UTC');
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return <span>SYS CLK: <span className="text-cyan-300">{timeUtc}</span></span>;
+});
+
+TelemetryClock.displayName = 'TelemetryClock';
+
 export const Navbar: React.FC<NavbarProps> = ({ currentPath, onNavigate }) => {
   const { user, isAdmin, loginAsDemoUser, logout, isCRTActive, toggleCRT, isAudioActive, toggleAudio } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [timeUtc, setTimeUtc] = useState<string>('');
-
-  useEffect(() => {
-    const updateTime = () => {
-      const now = new Date();
-      setTimeUtc(now.toISOString().substring(11, 19) + ' UTC');
-    };
-    updateTime();
-    const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   const handleNav = (path: string) => {
     playTacticalBlip(980, 0.05);
@@ -66,7 +70,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath, onNavigate }) => {
           <span className="text-slate-500">|</span>
           <span>LAT 37.7749° N // LON 122.4194° W</span>
           <span className="text-slate-500">|</span>
-          <span>SYS CLK: <span className="text-cyan-300">{timeUtc}</span></span>
+          <TelemetryClock />
         </div>
 
         <div className="flex items-center space-x-4">

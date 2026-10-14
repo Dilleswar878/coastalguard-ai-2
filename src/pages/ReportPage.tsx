@@ -4,6 +4,8 @@ import { incidentService } from '../services/incidentStorage';
 import { analyzeIncidentWithAI } from '../services/aiAnalysis';
 import { useAuth } from '../context/AuthContext';
 import { playTacticalBlip, playTacticalAlert, playSuccessChime } from '../utils/audio';
+import { compressImage } from '../utils/imageCompressor';
+import { sanitizeText } from '../utils/sanitize';
 import {
   AlertOctagon,
   Camera,
@@ -20,10 +22,33 @@ import {
   Info,
   Shield,
   Loader2,
+  Sparkles,
 } from 'lucide-react';
 
 interface ReportPageProps {
   onNavigate: (path: string, state?: Record<string, unknown>) => void;
+}
+
+interface SpeechRecognitionResultItem {
+  transcript: string;
+}
+interface SpeechRecognitionResultList {
+  [index: number]: { [index: number]: SpeechRecognitionResultItem };
+  length: number;
+}
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: SpeechRecognitionResultList;
+}
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
 }
 
 export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
@@ -51,12 +76,18 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imageMimeType, setImageMimeType] = useState<string>('image/jpeg');
   const [imageError, setImageError] = useState<string | null>(null);
+  const [isCompressing, setIsCompressing] = useState<boolean>(false);
+  const [compressionStats, setCompressionStats] = useState<{
+    originalKB: number;
+    compressedKB: number;
+    savingsPercent: number;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Voice speech-to-text state
   const [isListening, setIsListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
-  const recognitionRef = useRef<unknown>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   // Location state
   const [locationName, setLocationName] = useState('');
@@ -74,19 +105,17 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
   // Initialize Speech Recognition if supported
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const SpeechRecognitionClass = (window as unknown as { SpeechRecognition: unknown }).SpeechRecognition ||
-        (window as unknown as { webkitSpeechRecognition: unknown }).webkitSpeechRecognition;
+      const SpeechRecognitionClass = (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ||
+        (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition;
 
       if (SpeechRecognitionClass) {
         setSpeechSupported(true);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const recognition = new (SpeechRecognitionClass as any)();
+        const recognition = new SpeechRecognitionClass();
         recognition.continuous = true;
         recognition.interimResults = true;
         recognition.lang = 'en-US';
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        recognition.onresult = (event: any) => {
+        recognition.onresult = (event: SpeechRecognitionEventLike) => {
           let current = '';
           for (let i = event.resultIndex; i < event.results.length; i++) {
             current += event.results[i][0].transcript;
@@ -112,8 +141,7 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
   const toggleSpeech = () => {
     if (!speechSupported || !recognitionRef.current) return;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const recog = recognitionRef.current as any;
+      const recog = recognitionRef.current;
       if (isListening) {
         recog.stop();
         setIsListening(false);
@@ -128,8 +156,8 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
     }
   };
 
-  // Image Upload Handler
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Image Upload Handler with Adaptive Client Compression
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     setImageError(null);
     const file = e.target.files?.[0];
     if (!file) return;
@@ -140,27 +168,52 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
       return;
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      setImageError('File size exceeds 10MB limit. Please attach a compressed image.');
+    if (file.size > 15 * 1024 * 1024) {
+      setImageError('File size exceeds 15MB limit. Please attach a compressed image.');
       playTacticalAlert();
       return;
     }
 
     setImageFile(file);
-    setImageMimeType(file.type);
+    setImageMimeType('image/jpeg');
+    setIsCompressing(true);
 
-    const reader = new FileReader();
-    reader.onload = (uploadEvent) => {
-      setImagePreview(uploadEvent.target?.result as string);
+    try {
+      // Downscale to max 1280x1280 to eliminate localStorage overflow and optimize Gemini inference latency
+      const result = await compressImage(file, {
+        maxWidth: 1280,
+        maxHeight: 1280,
+        quality: 0.82,
+        mimeType: 'image/jpeg',
+      });
+
+      setImagePreview(result.dataUrl);
+      const originalKB = Math.round(result.originalSizeBytes / 1024);
+      const compressedKB = Math.round(result.compressedSizeBytes / 1024);
+      const savingsPercent = originalKB > 0
+        ? Math.max(0, Math.round(((originalKB - compressedKB) / originalKB) * 100))
+        : 0;
+
+      setCompressionStats({
+        originalKB,
+        compressedKB,
+        savingsPercent,
+      });
+
       playTacticalBlip(880, 0.05);
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('Image compression error:', err);
+      setImageError('Failed to process image file. Please retry or choose another photo.');
+    } finally {
+      setIsCompressing(false);
+    }
   };
 
   const removeImage = () => {
     setImagePreview(null);
     setImageFile(null);
     setImageError(null);
+    setCompressionStats(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -260,16 +313,23 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
     playTacticalBlip(900, 0.06);
 
     try {
+      const cleanTitle = sanitizeText(title, 200);
+      const cleanDesc = sanitizeText(description, 5000);
+      const cleanLocation = sanitizeText(locationName, 200);
+      const cleanWildlife = sanitizeText(wildlifeObservations, 1000);
+      const cleanReporterName = sanitizeText(isAnonymous ? 'Anonymous Citizen' : reporterName || 'Citizen Sentry', 100);
+      const cleanReporterEmail = isAnonymous ? undefined : sanitizeText(reporterEmail, 150);
+
       // Step A: Neural AI Assessment
       setSubmissionProgress('RUNNING MULTIMODAL AI THREAT ASSESSMENT (GEMINI 3.8 / HEURISTIC MATRIX)...');
       
       const assessment = await analyzeIncidentWithAI({
-        title,
+        title: cleanTitle,
         category,
-        description,
-        locationName,
+        description: cleanDesc,
+        locationName: cleanLocation,
         perceivedSeverity,
-        wildlifeObservations,
+        wildlifeObservations: cleanWildlife,
         imageBase64: imagePreview || undefined,
         mimeType: imageMimeType,
       });
@@ -281,12 +341,12 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
       const lonNum = longitude ? parseFloat(longitude) : undefined;
 
       const newIncident = incidentService.create({
-        title,
+        title: cleanTitle,
         category,
-        description,
+        description: cleanDesc,
         severity: assessment.severity || perceivedSeverity,
         confidence: assessment.confidence || 85,
-        locationName,
+        locationName: cleanLocation,
         latitude: latNum,
         longitude: lonNum,
         locationPrecision,
@@ -294,9 +354,9 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
         imageUrl: imagePreview || undefined,
         submittedBy: {
           id: isAnonymous ? 'ANON' : user?.id || 'USR-CITIZEN',
-          name: isAnonymous ? 'Anonymous Citizen' : reporterName || 'Citizen Sentry',
+          name: cleanReporterName,
           isAnonymous,
-          email: isAnonymous ? undefined : reporterEmail,
+          email: cleanReporterEmail,
         },
         workflowStatus: 'Submitted',
         aiAssessment: assessment,
@@ -387,11 +447,18 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="e.g. Surface oil sheen spreading near marina jetty"
+              aria-required="true"
+              aria-invalid={Boolean(formErrors.title)}
+              aria-describedby={formErrors.title ? 'inc-title-error' : undefined}
               className={`w-full px-3 py-2.5 bg-black/70 border rounded font-mono text-xs text-white focus:outline-none ${
                 formErrors.title ? 'border-rose-500 ring-1 ring-rose-500' : 'border-cyan-900 focus:border-cyan-400'
               }`}
             />
-            {formErrors.title && <p className="font-mono text-xs text-rose-400">{formErrors.title}</p>}
+            {formErrors.title && (
+              <p id="inc-title-error" className="font-mono text-xs text-rose-400" role="alert">
+                {formErrors.title}
+              </p>
+            )}
           </div>
 
           {/* Pollution Category */}
@@ -423,7 +490,8 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
                 <button
                   type="button"
                   onClick={toggleSpeech}
-                  className={`flex items-center space-x-1 px-2 py-0.5 rounded border text-[11px] font-mono ${
+                  aria-pressed={isListening}
+                  className={`flex items-center space-x-1 px-2 py-0.5 rounded border text-[11px] font-mono cursor-pointer ${
                     isListening
                       ? 'border-pink-500 bg-pink-950 text-pink-300 animate-pulse'
                       : 'border-cyan-700 text-cyan-400 hover:bg-cyan-950'
@@ -441,11 +509,18 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Describe color, size, odor, current water movement, estimated volume, and proximity to sensitive marine life..."
+              aria-required="true"
+              aria-invalid={Boolean(formErrors.description)}
+              aria-describedby={formErrors.description ? 'inc-desc-error' : undefined}
               className={`w-full px-3 py-2.5 bg-black/70 border rounded font-mono text-xs text-white focus:outline-none ${
                 formErrors.description ? 'border-rose-500 ring-1 ring-rose-500' : 'border-cyan-900 focus:border-cyan-400'
               }`}
             />
-            {formErrors.description && <p className="font-mono text-xs text-rose-400">{formErrors.description}</p>}
+            {formErrors.description && (
+              <p id="inc-desc-error" className="font-mono text-xs text-rose-400" role="alert">
+                {formErrors.description}
+              </p>
+            )}
           </div>
 
           {/* Two-column: Date Observed & Perceived Severity */}
@@ -528,7 +603,19 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
               id="evidence-file"
             />
 
-            {!imagePreview ? (
+            {isCompressing && (
+              <div className="p-6 border border-cyan-400 bg-cyan-950/40 rounded text-center space-y-2">
+                <Loader2 className="w-6 h-6 text-cyan-400 animate-spin mx-auto" />
+                <p className="font-mono text-xs text-cyan-300">
+                  OPTIMIZING & DOWNSCALING HIGH-RES TELEMETRY PHOTO...
+                </p>
+                <p className="font-mono text-[10px] text-slate-400">
+                  Adaptive canvas compression preserves critical evidence tokens while preventing memory spikes.
+                </p>
+              </div>
+            )}
+
+            {!isCompressing && !imagePreview && (
               <label
                 htmlFor="evidence-file"
                 className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-cyan-500/40 hover:border-cyan-400 rounded bg-black/40 hover:bg-cyan-950/20 cursor-pointer transition-all group"
@@ -540,13 +627,15 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
                   CLICK TO ATTACH EVIDENCE PHOTOGRAPH
                 </span>
                 <span className="font-mono text-xs text-slate-400 mt-1">
-                  Supports PNG, JPEG, WebP up to 10MB
+                  Supports PNG, JPEG, WebP up to 15MB
                 </span>
                 <span className="font-mono text-[11px] text-cyan-400/80 mt-2">
                   (Or proceed to Step 3 for a valid text-only report)
                 </span>
               </label>
-            ) : (
+            )}
+
+            {!isCompressing && imagePreview && (
               <div className="space-y-3">
                 <div className="relative rounded overflow-hidden border-2 border-cyan-400 max-h-96 bg-black flex items-center justify-center">
                   <img src={imagePreview} alt="Evidence preview" className="max-h-96 object-contain" />
@@ -569,11 +658,21 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
                   </div>
                 </div>
 
-                <div className="p-2.5 bg-cyan-950/40 border border-cyan-500/40 rounded font-mono text-xs text-cyan-300 flex items-center justify-between">
-                  <span>ATTACHED: {imageFile?.name || 'Evidence Image'}</span>
-                  <span className="text-slate-400">
-                    {imageFile ? `${(imageFile.size / (1024 * 1024)).toFixed(2)} MB` : ''}
-                  </span>
+                <div className="p-3 bg-cyan-950/40 border border-cyan-500/40 rounded font-mono text-xs text-cyan-300 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold">ATTACHED: {imageFile?.name || 'Evidence Image'}</span>
+                    <span className="text-slate-400">
+                      {imageFile ? `${(imageFile.size / (1024 * 1024)).toFixed(2)} MB raw` : ''}
+                    </span>
+                  </div>
+                  {compressionStats && (
+                    <div className="flex items-center space-x-1.5 text-[11px] text-emerald-400 pt-1 border-t border-cyan-900/60">
+                      <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        Optimized for fast telemetry: {compressionStats.originalKB} KB → {compressionStats.compressedKB} KB ({compressionStats.savingsPercent}% bandwidth saved)
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -646,12 +745,17 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
               value={locationName}
               onChange={(e) => setLocationName(e.target.value)}
               placeholder="e.g. Pacific Shoreline Dune Sector 4, near Mile Marker 12"
+              aria-required="true"
+              aria-invalid={Boolean(formErrors.locationName)}
+              aria-describedby={formErrors.locationName ? 'inc-locname-error' : undefined}
               className={`w-full px-3 py-2.5 bg-black/70 border rounded font-mono text-xs text-white focus:outline-none ${
                 formErrors.locationName ? 'border-rose-500 ring-1 ring-rose-500' : 'border-cyan-900 focus:border-cyan-400'
               }`}
             />
             {formErrors.locationName && (
-              <p className="font-mono text-xs text-rose-400">{formErrors.locationName}</p>
+              <p id="inc-locname-error" className="font-mono text-xs text-rose-400" role="alert">
+                {formErrors.locationName}
+              </p>
             )}
           </div>
 
@@ -670,12 +774,16 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
                   setLocationPrecision('manual_approximate');
                 }}
                 placeholder="e.g. 37.769000"
+                aria-invalid={Boolean(formErrors.latitude)}
+                aria-describedby={formErrors.latitude ? 'inc-lat-error' : undefined}
                 className={`w-full px-3 py-2.5 bg-black/70 border rounded font-mono text-xs text-white focus:outline-none ${
                   formErrors.latitude ? 'border-rose-500 ring-1 ring-rose-500' : 'border-cyan-900 focus:border-cyan-400'
                 }`}
               />
               {formErrors.latitude && (
-                <p className="font-mono text-xs text-rose-400">{formErrors.latitude}</p>
+                <p id="inc-lat-error" className="font-mono text-xs text-rose-400" role="alert">
+                  {formErrors.latitude}
+                </p>
               )}
             </div>
 
@@ -692,12 +800,16 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
                   setLocationPrecision('manual_approximate');
                 }}
                 placeholder="e.g. -122.511000"
+                aria-invalid={Boolean(formErrors.longitude)}
+                aria-describedby={formErrors.longitude ? 'inc-lon-error' : undefined}
                 className={`w-full px-3 py-2.5 bg-black/70 border rounded font-mono text-xs text-white focus:outline-none ${
                   formErrors.longitude ? 'border-rose-500 ring-1 ring-rose-500' : 'border-cyan-900 focus:border-cyan-400'
                 }`}
               />
               {formErrors.longitude && (
-                <p className="font-mono text-xs text-rose-400">{formErrors.longitude}</p>
+                <p id="inc-lon-error" className="font-mono text-xs text-rose-400" role="alert">
+                  {formErrors.longitude}
+                </p>
               )}
             </div>
           </div>
@@ -816,7 +928,11 @@ export const ReportPage: React.FC<ReportPageProps> = ({ onNavigate }) => {
 
           {/* Submission progress overlay */}
           {isSubmitting && (
-            <div className="p-4 bg-cyan-950/80 border border-cyan-400 rounded space-y-2 text-center font-mono text-xs">
+            <div
+              role="status"
+              aria-live="polite"
+              className="p-4 bg-cyan-950/80 border border-cyan-400 rounded space-y-2 text-center font-mono text-xs"
+            >
               <div className="flex items-center justify-center space-x-2 text-cyan-300 font-bold">
                 <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
                 <span>{submissionProgress}</span>

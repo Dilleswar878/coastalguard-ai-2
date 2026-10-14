@@ -28,23 +28,27 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ incidents, onNavig
   const [filterSeverity, setFilterSeverity] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
-  // Filtered dataset
-  const filtered = incidents.filter((inc) => {
-    if (filterCategory !== 'all' && inc.category !== filterCategory) return false;
-    if (filterSeverity !== 'all' && inc.severity !== filterSeverity) return false;
-    if (filterStatus !== 'all' && inc.workflowStatus !== filterStatus) return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      const matchTitle = inc.title.toLowerCase().includes(q);
-      const matchLoc = inc.locationName.toLowerCase().includes(q);
-      const matchId = inc.id.toLowerCase().includes(q);
-      if (!matchTitle && !matchLoc && !matchId) return false;
-    }
-    return true;
-  });
+  // Memoize filtered dataset
+  const filtered = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return incidents.filter((inc) => {
+      if (filterCategory !== 'all' && inc.category !== filterCategory) return false;
+      if (filterSeverity !== 'all' && inc.severity !== filterSeverity) return false;
+      if (filterStatus !== 'all' && inc.workflowStatus !== filterStatus) return false;
+      if (q) {
+        const matchTitle = inc.title.toLowerCase().includes(q);
+        const matchLoc = inc.locationName.toLowerCase().includes(q);
+        const matchId = inc.id.toLowerCase().includes(q);
+        if (!matchTitle && !matchLoc && !matchId) return false;
+      }
+      return true;
+    });
+  }, [incidents, filterCategory, filterSeverity, filterStatus, searchQuery]);
 
-  // Calculate live metrics dynamically from filtered dataset!
-  const metrics = incidentService.calculateMetrics(filtered);
+  // Memoize live metrics dynamically calculated from filtered dataset
+  const metrics = React.useMemo(() => {
+    return incidentService.calculateMetrics(filtered);
+  }, [filtered]);
 
   // CSV Export
   const handleExportCSV = () => {
@@ -102,6 +106,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ incidents, onNavig
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search reports or locations..."
+              aria-label="Search incident reports or coastal sector locations"
               className="w-full pl-8 pr-3 py-2 bg-black/60 border border-cyan-900 rounded text-white focus:outline-none focus:border-cyan-400"
             />
           </div>
@@ -113,6 +118,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ incidents, onNavig
                 setFilterCategory(e.target.value);
                 playTacticalBlip(700, 0.03);
               }}
+              aria-label="Filter incidents by pollution category"
               className="w-full px-3 py-2 bg-black/60 border border-cyan-900 rounded text-cyan-200 focus:outline-none focus:border-cyan-400"
             >
               <option value="all">All Categories</option>
@@ -129,6 +135,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ incidents, onNavig
                 setFilterSeverity(e.target.value);
                 playTacticalBlip(700, 0.03);
               }}
+              aria-label="Filter incidents by severity level"
               className="w-full px-3 py-2 bg-black/60 border border-cyan-900 rounded text-cyan-200 focus:outline-none focus:border-cyan-400"
             >
               <option value="all">All Severities</option>
@@ -146,6 +153,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ incidents, onNavig
                 setFilterStatus(e.target.value);
                 playTacticalBlip(700, 0.03);
               }}
+              aria-label="Filter incidents by workflow lifecycle status"
               className="w-full px-3 py-2 bg-black/60 border border-cyan-900 rounded text-cyan-200 focus:outline-none focus:border-cyan-400"
             >
               <option value="all">All Workflow Statuses</option>

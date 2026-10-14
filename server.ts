@@ -12,7 +12,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json({ limit: '25mb' }));
+// Security Headers Middleware
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
+});
+
+app.use(express.json({ limit: '12mb' }));
 
 // Health / Status check
 app.get('/api/health', (req, res) => {
@@ -24,8 +32,102 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// In-memory sliding window rate limiter (20 requests per minute per IP) with memory eviction
+const requestRateMap = new Map<string, number[]>();
+const MAX_TRACKED_IPS = 5000;
+
+function pruneRateLimits(): void {
+  const now = Date.now();
+  const windowMs = 60 * 1000;
+  for (const [ip, timestamps] of requestRateMap.entries()) {
+    const valid = timestamps.filter((t) => now - t < windowMs);
+    if (valid.length === 0) {
+      requestRateMap.delete(ip);
+    } else {
+      requestRateMap.set(ip, valid);
+    }
+  }
+}
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 1000;
+  const maxRequests = 20;
+
+  // Evict if map exceeds safety threshold
+  if (requestRateMap.size > MAX_TRACKED_IPS) {
+    pruneRateLimits();
+  }
+
+  const existing = requestRateMap.get(ip) || [];
+  const validTimestamps = existing.filter((t) => now - t < windowMs);
+
+  if (validTimestamps.length >= maxRequests) {
+    return false;
+  }
+
+  validTimestamps.push(now);
+  requestRateMap.set(ip, validTimestamps);
+  return true;
+}
+
+const ALLOWED_CATEGORIES = new Set([
+  'plastic_waste',
+  'oil_spill',
+  'sewage_wastewater',
+  'fishing_nets',
+  'algal_bloom',
+  'distressed_wildlife',
+  'other_environmental',
+]);
+
+const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const ALLOWED_SEVERITIES = new Set(['Low', 'Medium', 'High', 'Critical']);
+
 // Gemini Analysis API
 app.post('/api/gemini/analyze-incident', async (req, res) => {
+  const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit(clientIp)) {
+    return res.status(429).json({
+      error: 'Rate limit exceeded. Please wait a minute before sending further telemetry requests.',
+      isFallback: true,
+      modelUsed: 'CoastalGuard Heuristic Engine (Offline Fallback)',
+    });
+  }
+
+  const { title, category, description, locationName, perceivedSeverity, wildlifeObservations, imageBase64, mimeType } = req.body;
+
+  // Input Validation
+  if (title !== undefined && (typeof title !== 'string' || title.length > 200)) {
+    return res.status(400).json({ error: 'Invalid title: must be a string up to 200 characters.' });
+  }
+
+  if (category !== undefined && !ALLOWED_CATEGORIES.has(category)) {
+    return res.status(400).json({ error: 'Invalid incident category specified.' });
+  }
+
+  if (description !== undefined && (typeof description !== 'string' || description.length > 5000)) {
+    return res.status(400).json({ error: 'Invalid description: must be a string up to 5000 characters.' });
+  }
+
+  if (locationName !== undefined && (typeof locationName !== 'string' || locationName.length > 200)) {
+    return res.status(400).json({ error: 'Invalid locationName: must be a string up to 200 characters.' });
+  }
+
+  if (perceivedSeverity !== undefined && !ALLOWED_SEVERITIES.has(perceivedSeverity)) {
+    return res.status(400).json({ error: 'Invalid perceivedSeverity value.' });
+  }
+
+  if (mimeType !== undefined && mimeType !== '' && !ALLOWED_MIME_TYPES.has(mimeType)) {
+    return res.status(400).json({ error: 'Invalid image mimeType. Allowed: image/jpeg, image/png, image/webp.' });
+  }
+
+  if (imageBase64 !== undefined && imageBase64 !== '') {
+    if (typeof imageBase64 !== 'string' || imageBase64.length > 20 * 1024 * 1024) {
+      return res.status(400).json({ error: 'Image payload exceeds allowable size limit.' });
+    }
+  }
+
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
@@ -35,8 +137,6 @@ app.post('/api/gemini/analyze-incident', async (req, res) => {
       modelUsed: 'CoastalGuard Heuristic Engine (Offline Fallback)',
     });
   }
-
-  const { title, category, description, locationName, perceivedSeverity, wildlifeObservations, imageBase64, mimeType } = req.body;
 
   try {
     const ai = new GoogleGenAI({
@@ -178,10 +278,10 @@ Evaluate the incident category, severity (Low, Medium, High, or Critical), confi
     });
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown Gemini error';
-    console.error('Gemini API execution error:', errorMsg);
+    console.error('[CoastalGuard AI] Gemini API execution error (logged safely server-side):', errorMsg);
     return res.status(200).json({
       isFallback: true,
-      message: `Gemini API execution error: ${errorMsg}`,
+      message: 'Gemini telemetry service encountered an operational condition. Calibrated heuristic fallback matrix engaged.',
       modelUsed: 'CoastalGuard Heuristic Engine (Offline Fallback)',
     });
   }

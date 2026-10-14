@@ -24,8 +24,8 @@ interface HomePageProps {
 }
 
 export const HomePage: React.FC<HomePageProps> = ({ onNavigate, incidents }) => {
-  const metrics = incidentService.calculateMetrics(incidents);
-  const recentIncidents = incidents.slice(0, 3);
+  const metrics = React.useMemo(() => incidentService.calculateMetrics(incidents), [incidents]);
+  const recentIncidents = React.useMemo(() => incidents.slice(0, 3), [incidents]);
 
   const handleAction = (path: string) => {
     playTacticalBlip(950, 0.05);

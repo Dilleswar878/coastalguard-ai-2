@@ -52,18 +52,20 @@ export const AdminPage: React.FC<AdminPageProps> = ({ incidents, onNavigate, onR
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const filtered = incidents.filter((inc) => {
-    if (filterCategory !== 'all' && inc.category !== filterCategory) return false;
-    if (filterStatus !== 'all' && inc.workflowStatus !== filterStatus) return false;
-    if (filterSeverity !== 'all' && inc.severity !== filterSeverity) return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      if (!inc.id.toLowerCase().includes(q) && !inc.title.toLowerCase().includes(q) && !inc.locationName.toLowerCase().includes(q)) {
-        return false;
+  const filtered = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return incidents.filter((inc) => {
+      if (filterCategory !== 'all' && inc.category !== filterCategory) return false;
+      if (filterStatus !== 'all' && inc.workflowStatus !== filterStatus) return false;
+      if (filterSeverity !== 'all' && inc.severity !== filterSeverity) return false;
+      if (q) {
+        if (!inc.id.toLowerCase().includes(q) && !inc.title.toLowerCase().includes(q) && !inc.locationName.toLowerCase().includes(q)) {
+          return false;
+        }
       }
-    }
-    return true;
-  });
+      return true;
+    });
+  }, [incidents, filterCategory, filterStatus, filterSeverity, searchQuery]);
 
   const handleSelectIncident = (inc: Incident) => {
     playTacticalBlip(750, 0.04);
@@ -231,6 +233,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ incidents, onNavigate, onR
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search ID, title, or location..."
+              aria-label="Search incidents by ID, title, or coastal location"
               className="w-full pl-8 pr-3 py-2 bg-black/60 border border-slate-700 rounded text-white focus:outline-none focus:border-cyan-400"
             />
           </div>
@@ -239,6 +242,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ incidents, onNavigate, onR
             <select
               value={filterCategory}
               onChange={(e) => setFilterCategory(e.target.value)}
+              aria-label="Filter queue by pollution category"
               className="w-full px-3 py-2 bg-black/60 border border-slate-700 rounded text-cyan-200 focus:outline-none"
             >
               <option value="all">All Categories ({incidents.length})</option>
@@ -252,6 +256,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ incidents, onNavigate, onR
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
+              aria-label="Filter queue by workflow status"
               className="w-full px-3 py-2 bg-black/60 border border-slate-700 rounded text-cyan-200 focus:outline-none"
             >
               <option value="all">All Workflow Statuses</option>
@@ -268,6 +273,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ incidents, onNavigate, onR
             <select
               value={filterSeverity}
               onChange={(e) => setFilterSeverity(e.target.value)}
+              aria-label="Filter queue by incident severity"
               className="w-full px-3 py-2 bg-black/60 border border-slate-700 rounded text-cyan-200 focus:outline-none"
             >
               <option value="all">All Severities</option>
@@ -290,14 +296,14 @@ export const AdminPage: React.FC<AdminPageProps> = ({ incidents, onNavigate, onR
           </div>
 
           <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
-            <table className="w-full text-left text-xs text-slate-300">
+            <table className="w-full text-left text-xs text-slate-300" aria-label="Incident response telemetry queue">
               <thead className="bg-black/90 text-cyan-400 uppercase text-[10px] sticky top-0 border-b border-cyan-900">
                 <tr>
-                  <th className="px-3 py-2.5">ID</th>
-                  <th className="px-3 py-2.5">Title & Sector</th>
-                  <th className="px-3 py-2.5">Severity</th>
-                  <th className="px-3 py-2.5">Status</th>
-                  <th className="px-3 py-2.5">Assigned Squad</th>
+                  <th scope="col" className="px-3 py-2.5">ID</th>
+                  <th scope="col" className="px-3 py-2.5">Title & Sector</th>
+                  <th scope="col" className="px-3 py-2.5">Severity</th>
+                  <th scope="col" className="px-3 py-2.5">Status</th>
+                  <th scope="col" className="px-3 py-2.5">Assigned Squad</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">

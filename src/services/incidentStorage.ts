@@ -7,6 +7,7 @@ import {
   UserRewardProfile,
   CATEGORY_LABELS,
 } from '../types/incident';
+import { sanitizeCsvCell } from '../utils/sanitize';
 
 const STORAGE_KEY = 'coastalguard_incidents_v2';
 const REWARDS_KEY = 'coastalguard_rewards_v2';
@@ -785,8 +786,30 @@ class IncidentStorageService {
     if (typeof window !== 'undefined') {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-      } catch (err) {
-        console.error('Error writing to localStorage', err);
+      } catch (err: unknown) {
+        console.warn('[CoastalGuard Storage] Initial localStorage write exceeded quota. Engaging adaptive prune strategy.', err);
+        try {
+          // Adaptive Strategy 1: Strip large base64 image strings from older historical incidents
+          const pruned = list.map((inc, index) => {
+            // Keep recent incident images (first 2), replace older base64 thumbnails with placeholder marker
+            if (index > 1 && inc.imageUrl && inc.imageUrl.startsWith('data:image')) {
+              return { ...inc, imageUrl: undefined };
+            }
+            return inc;
+          });
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(pruned));
+        } catch {
+          try {
+            // Adaptive Strategy 2: If still overflowing, retain the latest 25 essential telemetry records
+            const compact = list.slice(0, 25).map((inc) => ({
+              ...inc,
+              imageUrl: inc.imageUrl?.startsWith('data:image') ? undefined : inc.imageUrl,
+            }));
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(compact));
+          } catch (criticalErr) {
+            console.error('[CoastalGuard Storage] LocalStorage completely full. In-memory telemetry remains active.', criticalErr);
+          }
+        }
       }
     }
     this.notify();
@@ -907,31 +930,25 @@ class IncidentStorageService {
       'Reward Points',
     ];
 
-    const escapeCell = (val: unknown): string => {
-      if (val === null || val === undefined) return '""';
-      const str = String(val).replace(/"/g, '""');
-      return `"${str}"`;
-    };
-
-    const headers = rawHeaders.map((h) => escapeCell(h)).join(',');
+    const headers = rawHeaders.map((h) => sanitizeCsvCell(h)).join(',');
 
     const rows = incidents.map((inc) => [
-      escapeCell(inc.id),
-      escapeCell(inc.title),
-      escapeCell(CATEGORY_LABELS[inc.category] || inc.category),
-      escapeCell(inc.severity),
-      escapeCell(inc.workflowStatus),
-      escapeCell(inc.confidence),
-      escapeCell(inc.locationName),
-      escapeCell(inc.latitude ?? ''),
-      escapeCell(inc.longitude ?? ''),
-      escapeCell(inc.locationPrecision),
-      escapeCell(inc.observedAt),
-      escapeCell(inc.createdAt),
-      escapeCell(inc.submittedBy.isAnonymous ? 'Anonymous Citizen' : inc.submittedBy.name),
-      escapeCell(inc.assignedTeam ? inc.assignedTeam.name : 'Unassigned'),
-      escapeCell(inc.aiAssessment?.suggestedAgency || ''),
-      escapeCell(inc.rewardPoints),
+      sanitizeCsvCell(inc.id),
+      sanitizeCsvCell(inc.title),
+      sanitizeCsvCell(CATEGORY_LABELS[inc.category] || inc.category),
+      sanitizeCsvCell(inc.severity),
+      sanitizeCsvCell(inc.workflowStatus),
+      sanitizeCsvCell(inc.confidence),
+      sanitizeCsvCell(inc.locationName),
+      sanitizeCsvCell(inc.latitude ?? ''),
+      sanitizeCsvCell(inc.longitude ?? ''),
+      sanitizeCsvCell(inc.locationPrecision),
+      sanitizeCsvCell(inc.observedAt),
+      sanitizeCsvCell(inc.createdAt),
+      sanitizeCsvCell(inc.submittedBy.isAnonymous ? 'Anonymous Citizen' : inc.submittedBy.name),
+      sanitizeCsvCell(inc.assignedTeam ? inc.assignedTeam.name : 'Unassigned'),
+      sanitizeCsvCell(inc.aiAssessment?.suggestedAgency || ''),
+      sanitizeCsvCell(inc.rewardPoints),
     ]);
 
     return [headers, ...rows.map((r) => r.join(','))].join('\n');

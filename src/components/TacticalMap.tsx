@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import L from 'leaflet';
-import { Incident, IncidentCategory, IncidentSeverity, WorkflowStatus, CATEGORY_LABELS, SEVERITY_COLORS, STATUS_COLORS } from '../types/incident';
+import { Incident, IncidentCategory, CATEGORY_LABELS, SEVERITY_COLORS, STATUS_COLORS } from '../types/incident';
 import { playTacticalBlip } from '../utils/audio';
-import { Search, Filter, Layers, List, Map as MapIcon, Crosshair, AlertTriangle, ExternalLink } from 'lucide-react';
+import { escapeHtml } from '../utils/sanitize';
+import { Search, List, Map as MapIcon, Crosshair, AlertTriangle, ExternalLink } from 'lucide-react';
 
 interface TacticalMapProps {
   incidents: Incident[];
@@ -23,29 +24,40 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
   const [mapError, setMapError] = useState<string | null>(null);
   const [activeIncidentId, setActiveIncidentId] = useState<string | null>(initialSelectedId || null);
 
-  // Filtered list
-  const filteredIncidents = incidents.filter((inc) => {
-    if (selectedCategory !== 'all' && inc.category !== selectedCategory) return false;
-    if (selectedSeverity !== 'all' && inc.severity !== selectedSeverity) return false;
-    if (selectedStatus !== 'all' && inc.workflowStatus !== selectedStatus) return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      const matchTitle = inc.title.toLowerCase().includes(q);
-      const matchLoc = inc.locationName.toLowerCase().includes(q);
-      const matchDesc = inc.description.toLowerCase().includes(q);
-      const matchId = inc.id.toLowerCase().includes(q);
-      if (!matchTitle && !matchLoc && !matchDesc && !matchId) return false;
-    }
-    return true;
-  });
+  // Memoize filtered incidents list to prevent recalculation and marker thrashing on unrelated renders
+  const filteredIncidents = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return incidents.filter((inc) => {
+      if (selectedCategory !== 'all' && inc.category !== selectedCategory) return false;
+      if (selectedSeverity !== 'all' && inc.severity !== selectedSeverity) return false;
+      if (selectedStatus !== 'all' && inc.workflowStatus !== selectedStatus) return false;
+      if (q) {
+        const matchTitle = inc.title.toLowerCase().includes(q);
+        const matchLoc = inc.locationName.toLowerCase().includes(q);
+        const matchDesc = inc.description.toLowerCase().includes(q);
+        const matchId = inc.id.toLowerCase().includes(q);
+        if (!matchTitle && !matchLoc && !matchDesc && !matchId) return false;
+      }
+      return true;
+    });
+  }, [incidents, selectedCategory, selectedSeverity, selectedStatus, searchQuery]);
 
-  // Initialize Leaflet map
+  // Invalidate map size when switching back to map view
+  useEffect(() => {
+    if (viewMode === 'map' && mapInstanceRef.current) {
+      const timer = setTimeout(() => {
+        mapInstanceRef.current?.invalidateSize();
+      }, 60);
+      return () => clearTimeout(timer);
+    }
+  }, [viewMode]);
+
+  // Initialize Leaflet map once
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
     try {
       if (!mapInstanceRef.current) {
-        // Center around coastal California by default or first incident coordinates
         const defaultLat = 37.7749;
         const defaultLng = -122.4194;
 
@@ -56,7 +68,6 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
           attributionControl: true,
         });
 
-        // Dark-styled OpenStreetMap tile layer (CartoDB Dark Matter / OSM)
         const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
           maxZoom: 19,
           subdomains: 'abcd',
@@ -80,7 +91,6 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
     }
 
     return () => {
-      // Cleanup on unmount
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -95,30 +105,24 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
     if (!map || !markersLayer) return;
 
     markersLayer.clearLayers();
-
     const validCoordinates: [number, number][] = [];
 
     filteredIncidents.forEach((inc) => {
       if (typeof inc.latitude === 'number' && typeof inc.longitude === 'number') {
         validCoordinates.push([inc.latitude, inc.longitude]);
 
-        // Severity-based neon marker colors
         let markerBg = '#00f0ff';
         let markerBorder = '#00f0ff';
-        let pingColor = 'rgba(0, 240, 255, 0.4)';
 
         if (inc.severity === 'Critical') {
           markerBg = '#ff007f';
           markerBorder = '#ff007f';
-          pingColor = 'rgba(255, 0, 127, 0.6)';
         } else if (inc.severity === 'High') {
           markerBg = '#f59e0b';
           markerBorder = '#f59e0b';
-          pingColor = 'rgba(245, 158, 11, 0.5)';
         } else if (inc.severity === 'Low') {
           markerBg = '#10b981';
           markerBorder = '#10b981';
-          pingColor = 'rgba(16, 185, 129, 0.4)';
         }
 
         const customIcon = L.divIcon({
@@ -138,16 +142,23 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
 
         const marker = L.marker([inc.latitude, inc.longitude], { icon: customIcon });
 
+        // Escape all user-derived values to prevent Stored XSS
+        const safeId = escapeHtml(inc.id);
+        const safeSeverity = escapeHtml(inc.severity);
+        const safeTitle = escapeHtml(inc.title);
+        const safeLocation = escapeHtml(inc.locationName);
+        const safeStatus = escapeHtml(inc.workflowStatus);
+
         const popupContent = `
           <div style="padding: 4px; font-family: monospace; min-width: 200px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; border-bottom: 1px solid rgba(0,240,255,0.4); padding-bottom: 4px;">
-              <span style="color: #00f0ff; font-weight: bold; font-size: 11px;">${inc.id}</span>
-              <span style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 2px; font-size: 9px; color: #e2f1f8;">${inc.severity}</span>
+              <span style="color: #00f0ff; font-weight: bold; font-size: 11px;">${safeId}</span>
+              <span style="background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 2px; font-size: 9px; color: #e2f1f8;">${safeSeverity}</span>
             </div>
-            <div style="font-weight: bold; font-size: 12px; color: #ffffff; margin-bottom: 4px;">${inc.title}</div>
-            <div style="font-size: 11px; color: #94a3b8; margin-bottom: 4px;">📍 ${inc.locationName}</div>
-            <div style="font-size: 10px; color: #06b6d4; margin-bottom: 8px;">Status: <strong>${inc.workflowStatus}</strong></div>
-            <button id="btn-popup-${inc.id}" style="width: 100%; background: #00f0ff; color: #000; border: none; font-weight: bold; padding: 4px 8px; border-radius: 2px; cursor: pointer; font-size: 11px; text-transform: uppercase;">
+            <div style="font-weight: bold; font-size: 12px; color: #ffffff; margin-bottom: 4px;">${safeTitle}</div>
+            <div style="font-size: 11px; color: #94a3b8; margin-bottom: 4px;">📍 ${safeLocation}</div>
+            <div style="font-size: 10px; color: #06b6d4; margin-bottom: 8px;">Status: <strong>${safeStatus}</strong></div>
+            <button id="btn-popup-${safeId}" style="width: 100%; background: #00f0ff; color: #000; border: none; font-weight: bold; padding: 4px 8px; border-radius: 2px; cursor: pointer; font-size: 11px; text-transform: uppercase;">
               Inspect Incident &gt;
             </button>
           </div>
@@ -157,7 +168,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
 
         marker.on('popupopen', () => {
           setActiveIncidentId(inc.id);
-          const btn = document.getElementById(`btn-popup-${inc.id}`);
+          const btn = document.getElementById(`btn-popup-${safeId}`);
           if (btn) {
             btn.onclick = () => {
               playTacticalBlip(900, 0.05);
@@ -190,6 +201,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search reports or locations..."
               className="w-full pl-9 pr-3 py-2 bg-black/60 border border-cyan-900 rounded font-mono text-xs text-white focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400"
+              aria-label="Search incident reports or coastal locations"
             />
           </div>
 
@@ -233,13 +245,14 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
           </div>
 
           {/* View Toggle and Reset */}
-          <div className="flex items-center space-x-2 justify-end">
+          <div className="flex items-center space-x-2 justify-end" role="group" aria-label="Incident view layout">
             <button
               onClick={() => {
                 setViewMode('map');
                 playTacticalBlip(800, 0.03);
               }}
-              className={`flex items-center space-x-1.5 px-3 py-2 rounded font-mono text-xs border ${
+              aria-pressed={viewMode === 'map'}
+              className={`flex items-center space-x-1.5 px-3 py-2 rounded font-mono text-xs border min-h-[40px] cursor-pointer ${
                 viewMode === 'map'
                   ? 'bg-cyan-950 border-cyan-400 text-cyan-300 shadow-[0_0_8px_rgba(0,240,255,0.4)]'
                   : 'border-slate-800 text-slate-400 hover:text-cyan-300'
@@ -255,7 +268,8 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
                 setViewMode('list');
                 playTacticalBlip(800, 0.03);
               }}
-              className={`flex items-center space-x-1.5 px-3 py-2 rounded font-mono text-xs border ${
+              aria-pressed={viewMode === 'list'}
+              className={`flex items-center space-x-1.5 px-3 py-2 rounded font-mono text-xs border min-h-[40px] cursor-pointer ${
                 viewMode === 'list'
                   ? 'bg-cyan-950 border-cyan-400 text-cyan-300 shadow-[0_0_8px_rgba(0,240,255,0.4)]'
                   : 'border-slate-800 text-slate-400 hover:text-cyan-300'
@@ -269,7 +283,10 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
         </div>
 
         {/* Telemetry Status Bar */}
-        <div className="mt-3 pt-3 border-t border-cyan-900/40 flex flex-wrap items-center justify-between font-mono text-[11px] text-slate-400">
+        <div
+          className="mt-3 pt-3 border-t border-cyan-900/40 flex flex-wrap items-center justify-between font-mono text-[11px] text-slate-400"
+          aria-live="polite"
+        >
           <div>
             TRACKING: <span className="text-cyan-300 font-bold">{filteredIncidents.length}</span> / {incidents.length} INCIDENTS
             {selectedCategory !== 'all' && ` • Filter: ${CATEGORY_LABELS[selectedCategory as IncidentCategory] || selectedCategory}`}
@@ -302,12 +319,12 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
         </div>
       )}
 
-      {/* Main Map or Synchronized List View */}
-      {viewMode === 'map' ? (
+      {/* Persistent Map Container (Preserved in DOM to prevent container destruction and tile re-fetches) */}
+      <div className={viewMode === 'map' ? 'block' : 'hidden'}>
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           {/* Map canvas */}
           <div className="lg:col-span-3 h-[520px] rounded border border-cyan-500/40 overflow-hidden relative shadow-[0_0_20px_rgba(0,0,0,0.8)]">
-            <div ref={mapContainerRef} className="w-full h-full z-0" />
+            <div ref={mapContainerRef} className="w-full h-full z-0" tabIndex={0} aria-label="Interactive coastal map" />
 
             {/* Tactical HUD Overlay elements */}
             <div className="absolute top-3 right-3 z-10 pointer-events-none bg-black/80 border border-cyan-500/40 px-3 py-1.5 rounded font-mono text-[10px] text-cyan-300 shadow">
@@ -319,8 +336,8 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
           </div>
 
           {/* Side incident quick inspector */}
-          <div className="lg:col-span-1 h-[520px] overflow-y-auto space-y-2 pr-1">
-            <div className="sticky top-0 bg-[#030d1a] py-1 border-b border-cyan-900/60 font-mono text-xs text-cyan-400 font-bold flex justify-between">
+          <div className="lg:col-span-1 h-[520px] overflow-y-auto space-y-2 pr-1" role="region" aria-label="Incident quick inspector">
+            <div className="sticky top-0 bg-[#030d1a] py-1 border-b border-cyan-900/60 font-mono text-xs text-cyan-400 font-bold flex justify-between z-10">
               <span>RADAR DETECTIONS</span>
               <span>({filteredIncidents.length})</span>
             </div>
@@ -341,9 +358,20 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
                     onClick={() => {
                       setActiveIncidentId(inc.id);
                       playTacticalBlip(700, 0.03);
-                      // Center map on marker if available
                       if (mapInstanceRef.current && inc.latitude && inc.longitude) {
                         mapInstanceRef.current.flyTo([inc.latitude, inc.longitude], 13);
+                      }
+                    }}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Select incident ${inc.id}: ${inc.title}`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setActiveIncidentId(inc.id);
+                        if (mapInstanceRef.current && inc.latitude && inc.longitude) {
+                          mapInstanceRef.current.flyTo([inc.latitude, inc.longitude], 13);
+                        }
                       }
                     }}
                     className={`p-3 rounded border cursor-pointer transition-all ${
@@ -375,7 +403,8 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
                           playTacticalBlip(900, 0.04);
                           onSelectIncident(inc.id);
                         }}
-                        className="text-cyan-400 hover:text-cyan-200 underline flex items-center space-x-0.5"
+                        className="text-cyan-400 hover:text-cyan-200 underline flex items-center space-x-0.5 cursor-pointer"
+                        aria-label={`Inspect full details for incident ${inc.id}`}
                       >
                         <span>VIEW</span>
                         <ExternalLink className="w-2.5 h-2.5" />
@@ -387,8 +416,10 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
             )}
           </div>
         </div>
-      ) : (
-        /* Accessible List & Table View */
+      </div>
+
+      {/* Accessible List & Table View */}
+      <div className={viewMode === 'list' ? 'block' : 'hidden'}>
         <div className="bg-[#040e1e] border border-cyan-500/40 rounded overflow-hidden">
           <div className="p-4 bg-black/40 border-b border-cyan-900/60 flex items-center justify-between font-mono text-xs">
             <span className="text-cyan-300 font-bold">ACCESSIBLE INCIDENT REGISTRY</span>
@@ -451,7 +482,8 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
                               playTacticalBlip(900, 0.04);
                               onSelectIncident(inc.id);
                             }}
-                            className="px-3 py-1 bg-cyan-950 border border-cyan-400 text-cyan-300 hover:bg-cyan-900 rounded font-bold text-[11px]"
+                            className="px-3 py-1 bg-cyan-950 border border-cyan-400 text-cyan-300 hover:bg-cyan-900 rounded font-bold text-[11px] cursor-pointer"
+                            aria-label={`Inspect incident ${inc.id}`}
                           >
                             Inspect
                           </button>
@@ -464,7 +496,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ incidents, onSelectInc
             </table>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

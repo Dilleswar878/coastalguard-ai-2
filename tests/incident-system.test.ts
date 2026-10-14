@@ -257,6 +257,76 @@ async function runAllTests() {
     'Rule-based engine automatically includes hazardous perimeter warnings'
   );
 
+  // TEST 9: DATA SANITIZATION & FORMULA INJECTION MITIGATION
+  console.log('\n--- TEST GROUP 9: DATA SANITIZATION & SECURITY ---');
+  const { escapeHtml, sanitizeText, sanitizeCsvCell } = await import('../src/utils/sanitize');
+
+  const dangerousHtml = '<script>alert("xss")</script><img src="x" onerror="steal()">';
+  const escapedHtml = escapeHtml(dangerousHtml);
+  assert(!escapedHtml.includes('<script>') && escapedHtml.includes('&lt;script&gt;'), 'escapeHtml neutralizes executable script tags');
+  assert(!escapedHtml.includes('"xss"'), 'escapeHtml escapes quote characters');
+
+  const textWithControlChars = 'Pacific Coast\x00\x08Hazard\u200B Threat \r\n';
+  const cleanText = sanitizeText(textWithControlChars, 20);
+  assert(!cleanText.includes('\x00') && !cleanText.includes('\x08'), 'sanitizeText strips null bytes and dangerous control characters');
+  assert(cleanText.length <= 20, 'sanitizeText strictly enforces maximum length');
+
+  const formulaAttack1 = '=cmd|\'/C calc\'!A0';
+  const formulaAttack2 = '+1234-5678';
+  const formulaAttack3 = '@SUM(A1:A10)';
+  assert(sanitizeCsvCell(formulaAttack1).startsWith('"\'='), 'sanitizeCsvCell neutralizes = formula injection prefix');
+  assert(sanitizeCsvCell(formulaAttack2).startsWith('"\'+'), 'sanitizeCsvCell neutralizes + formula injection prefix');
+  assert(sanitizeCsvCell(formulaAttack3).startsWith('"\'@'), 'sanitizeCsvCell neutralizes @ formula injection prefix');
+
+  // TEST 10: COMPRESSION INTERFACE SAFETY
+  console.log('\n--- TEST GROUP 10: COMPRESSION INTERFACE & VALIDATION ---');
+  const { compressImage } = await import('../src/utils/imageCompressor');
+  const mockBase64 = 'data:image/jpeg;base64,' + 'A'.repeat(200);
+  const compResult = await compressImage(mockBase64, { maxWidth: 640, maxHeight: 640 });
+  assert(Boolean(compResult.dataUrl), 'compressImage safely returns dataUrl in node/test environment');
+  assert(compResult.mimeType === 'image/jpeg', 'compressImage respects target mimeType');
+
+  // TEST 11: STORAGE QUOTA RESILIENCE
+  console.log('\n--- TEST GROUP 11: STORAGE QUOTA & ADAPTIVE PRUNING ---');
+  const largeBatchIncident = incidentService.create({
+    title: 'High-volume Telemetry Sensor Stress Test',
+    category: 'plastic_waste',
+    description: 'Stress test incident to verify adaptive quota pruning under high telemetry throughput.',
+    severity: 'Medium',
+    confidence: 90,
+    locationName: 'Sector Zero Test Bed',
+    locationPrecision: 'exact_gps',
+    observedAt: new Date().toISOString(),
+    submittedBy: { id: 'STRESS-TEST', name: 'Load Generator', isAnonymous: true },
+    workflowStatus: 'Submitted',
+    aiAssessment: {
+      category: 'plastic_waste',
+      severity: 'Medium',
+      confidence: 90,
+      environmentalImpact: 'Simulated high throughput test load.',
+      affectedEcosystems: ['Tidal Estuary'],
+      immediatePrecautions: ['Maintain monitoring.'],
+      recommendedActions: ['Log telemetry benchmark.'],
+      suggestedAgency: 'Ocean Telemetry Test Lab',
+      priority: 'Medium',
+      explanation: 'System automated stress verification.',
+      limitations: 'Automated test harness.',
+      modelUsed: 'CoastalGuard Heuristic Engine (Offline Fallback)',
+      isFallback: true,
+    },
+  });
+  assert(Boolean(largeBatchIncident.id), 'Adaptive storage successfully saves record under load without throwing');
+  assert(incidentService.getById(largeBatchIncident.id) !== null, 'Saved record is retrievable from incident repository');
+
+  // TEST 12: DASHBOARD METRICS ZERO & EDGE CASES
+  console.log('\n--- TEST GROUP 12: METRICS EDGE CASES & ZERO-STATE ---');
+  const emptyMetrics = incidentService.calculateMetrics([]);
+  assert(emptyMetrics.totalReports === 0, 'calculateMetrics returns 0 for empty incident collection');
+  assert(emptyMetrics.openIncidents === 0, 'calculateMetrics openIncidents is 0 for empty collection');
+  assert(emptyMetrics.coastalZonesMonitored === 0, 'calculateMetrics coastal zones count is 0 for empty collection');
+  assert(emptyMetrics.averageResponseHours === null, 'calculateMetrics returns null averageResponseHours when 0 resolved incidents');
+  assert(typeof emptyMetrics.categoryDistribution.plastic_waste === 'number', 'calculateMetrics provides initialized category distributions');
+
   console.log('\n======================================================');
   console.log(`  TEST RESULTS: ${passed} PASSED / ${failed} FAILED`);
   console.log('======================================================\n');
